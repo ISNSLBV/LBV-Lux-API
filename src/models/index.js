@@ -149,6 +149,13 @@ ExamenFinal.belongsTo(Usuario, {
 });
 
 ExamenFinal.belongsTo(Usuario, {
+  as: "ProfesorVocal",
+  foreignKey: "id_profesor_vocal",
+  onDelete: "SET NULL",
+  onUpdate: "CASCADE",
+});
+
+ExamenFinal.belongsTo(Usuario, {
   as: "usuarioCreador",
   foreignKey: "creado_por",
   onDelete: "CASCADE",
@@ -529,6 +536,20 @@ MateriaPlan.hasMany(AcreditacionEquivalencia, {
 AcreditacionEquivalencia.belongsTo(Usuario, {
   foreignKey: "autorizado_por",
   as: "autorizador",
+  onDelete: "SET NULL",
+  onUpdate: "CASCADE",
+});
+
+AcreditacionEquivalencia.belongsTo(Carrera, {
+  foreignKey: "id_carrera",
+  as: "carrera",
+  onDelete: "SET NULL",
+  onUpdate: "CASCADE",
+});
+
+Carrera.hasMany(AcreditacionEquivalencia, {
+  foreignKey: "id_carrera",
+  as: "equivalencias",
   onDelete: "SET NULL",
   onUpdate: "CASCADE",
 });

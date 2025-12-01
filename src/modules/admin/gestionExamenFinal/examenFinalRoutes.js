@@ -10,7 +10,9 @@ const {
   actualizarCalificacion,
   actualizarConfiguracion,
   bloquearCalificacion,
-  obtenerProfesoresPorMateria
+  obtenerProfesoresPorMateria,
+  obtenerProfesoresVocalesDisponibles,
+  finalizarExamen
 } = require('./examenFinalController');
 const { requireRole, verifyToken } = require("../../../middlewares/auth");
 
@@ -33,5 +35,9 @@ router.put('/:id/configuracion', verifyToken, requireRole("Administrador"), actu
 
 // Rutas para obtener profesores por materia
 router.get('/profesores-materia/:idMateria', verifyToken, obtenerProfesoresPorMateria);
+
+// Rutas para finalizar examen
+router.get('/:id/profesores-vocales', verifyToken, requireRole("Administrador", "Profesor"), obtenerProfesoresVocalesDisponibles);
+router.put('/:id/finalizar', verifyToken, requireRole("Profesor"), finalizarExamen);
 
 module.exports = router;

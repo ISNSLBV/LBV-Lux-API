@@ -16,6 +16,12 @@ const {
   ConfiguracionSistema,
 } = require("../../models");
 const { Op } = require("sequelize");
+const {
+  verificarPuedeRendirFinal,
+  verificarPuedeRendirFinalComoLibre,
+  CONSTANTES_EXAMENES,
+  TIPOS_ALUMNO,
+} = require("../../utils/examenFinalUtils");
 
 // Obtener las carreras en las que se inscribió el alumno
 exports.getCarrerasInscripto = async (req, res) => {
@@ -68,7 +74,7 @@ exports.getMateriasPorCarrera = async (req, res) => {
       return res.status(404).json({ message: "Alumno no encontrado." });
     }
 
-    // Verificar inscripción del alumno en la carrera
+    // Verificar inscripción del alumno en la carrera y obtener el plan asignado
     const inscripcion = await AlumnoCarrera.findOne({
       where: {
         id_persona: idAlumno,
@@ -80,6 +86,8 @@ exports.getMateriasPorCarrera = async (req, res) => {
         message: "El alumno no está inscripto en esta carrera.",
       });
     }
+
+    const idPlanEstudioAsignado = inscripcion.id_plan_estudio_asignado;
 
     // Traer todas las materias inscriptas o aprobadas del alumno para esa carrera
     const materiasInscriptas = await InscripcionMateria.findAll({
@@ -97,6 +105,9 @@ exports.getMateriasPorCarrera = async (req, res) => {
               model: MateriaPlan,
               as: "materiaPlan",
               required: true,
+              where: {
+                id_plan_estudio: idPlanEstudioAsignado,
+              },
               include: [
                 {
                   model: Materia,
@@ -128,10 +139,8 @@ exports.getMateriasPorCarrera = async (req, res) => {
       ],
     });
 
-    // Filtrar solo las materias que pertenecen a la carrera consultada
-    const materiasFiltradas = materiasInscriptas.filter(
-      (item) => item.ciclo?.materiaPlan?.id_plan_estudio // id_plan_estudio debe estar en MateriaPlan
-    );
+    // Ya no es necesario filtrar aquí porque el filtro se aplicó en el where de MateriaPlan
+    const materiasFiltradas = materiasInscriptas;
 
     // Mapear la respuesta
     const resumenMateriasAlumno = materiasFiltradas.map((item) => ({
@@ -179,13 +188,61 @@ exports.registrarInscripcionMateria = async (req, res) => {
     const materiaPlanCiclo = await MateriaPlanCicloLectivo.findByPk(
       idMateriaPlanCicloLectivo,
       {
-        attributes: ["id", "fecha_cierre", "fecha_inicio"],
+        attributes: ["id", "fecha_cierre", "fecha_inicio", "id_materia_plan"],
+        include: [
+          {
+            model: MateriaPlan,
+            as: "materiaPlan",
+            attributes: ["id"],
+          },
+        ],
       }
     );
 
     if (!materiaPlanCiclo) {
       return res.status(404).json({ 
         error: "La materia especificada no existe" 
+      });
+    }
+
+    // Verificar si el alumno ya tiene una inscripción activa en esta materia (cualquier ciclo lectivo)
+    // Solo puede volver a inscribirse si su inscripción anterior está en estado "Desaprobada"
+    const inscripcionExistente = await InscripcionMateria.findOne({
+      where: {
+        id_usuario_alumno: idAlumno,
+        estado: {
+          [Op.notIn]: ["Desaprobada"], // Solo permitir reinscripción si está desaprobada
+        },
+      },
+      include: [
+        {
+          model: MateriaPlanCicloLectivo,
+          as: "ciclo",
+          where: {
+            id_materia_plan: materiaPlanCiclo.id_materia_plan,
+          },
+          required: true,
+        },
+      ],
+    });
+
+    if (inscripcionExistente) {
+      const estadoActual = inscripcionExistente.estado;
+      let mensajeError = "";
+
+      if (estadoActual === "Aprobada") {
+        mensajeError = "Ya tienes esta materia aprobada.";
+      } else if (estadoActual === "Regularizada") {
+        mensajeError = "Ya tienes esta materia regularizada. Debes rendir el examen final.";
+      } else if (estadoActual === "Cursando") {
+        mensajeError = "Ya estás cursando esta materia.";
+      } else {
+        mensajeError = `Ya tienes una inscripción activa en esta materia con estado: ${estadoActual}`;
+      }
+
+      return res.status(403).json({
+        error: mensajeError,
+        estadoActual: estadoActual,
       });
     }
 
@@ -213,6 +270,42 @@ exports.verificarEstadoInscripcionMaterias = async (req, res) => {
   const currentYear = new Date().getFullYear();
 
   try {
+    // 0. Verificar que el alumno esté activo en la carrera del plan
+    const usuario = await Usuario.findByPk(idAlumno, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const planEstudio = await PlanEstudio.findByPk(planId, {
+      attributes: ["id_carrera"]
+    });
+
+    if (!planEstudio) {
+      return res.status(404).json({ error: "Plan de estudios no encontrado" });
+    }
+
+    const alumnoCarrera = await AlumnoCarrera.findOne({
+      where: {
+        id_persona: usuario.id_persona,
+        id_carrera: planEstudio.id_carrera
+      }
+    });
+
+    if (!alumnoCarrera) {
+      return res.status(403).json({ 
+        error: "No estás inscripto en esta carrera" 
+      });
+    }
+
+    if (alumnoCarrera.activo === 0) {
+      return res.status(403).json({ 
+        error: "Estás dado de baja en esta carrera y no puedes inscribirte a materias" 
+      });
+    }
+
     // 1. Obtener todas las materias del plan del ciclo lectivo actual, incluyendo el nombre de la materia y fechas
     const materiasPlan = await MateriaPlan.findAll({
       where: { id_plan_estudio: planId },
@@ -506,6 +599,42 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
   const idAlumno = req.user.id;
 
   try {
+    // Verificar que el alumno esté activo en la carrera del plan
+    const usuario = await Usuario.findByPk(idAlumno, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    const planEstudio = await PlanEstudio.findByPk(idPlan, {
+      attributes: ["id_carrera"]
+    });
+
+    if (!planEstudio) {
+      return res.status(404).json({ error: "Plan de estudios no encontrado" });
+    }
+
+    const alumnoCarrera = await AlumnoCarrera.findOne({
+      where: {
+        id_persona: usuario.id_persona,
+        id_carrera: planEstudio.id_carrera
+      }
+    });
+
+    if (!alumnoCarrera) {
+      return res.status(403).json({ 
+        error: "No estás inscripto en esta carrera" 
+      });
+    }
+
+    if (alumnoCarrera.activo === 0) {
+      return res.status(403).json({ 
+        error: "Estás dado de baja en esta carrera y no puedes inscribirte a exámenes finales" 
+      });
+    }
+
     const examenes = await ExamenFinal.findAll({
       attributes: ["id", "fecha", "estado", "id_usuario_profesor"],
       include: [
@@ -624,7 +753,7 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
       }
     });
 
-    const estadosFinales = examenes.map((examen) => {
+    const estadosFinales = await Promise.all(examenes.map(async (examen) => {
       const idExamenFinal = examen.id;
       const idMateriaPlan = examen.materiaPlan?.id ?? null;
       const inscripcionMateria =
@@ -638,6 +767,7 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
       let promedioCalificaciones = null;
       let notaBase = null;
       let tipoAlumno = null;
+      let intentosInfo = null; // Nueva variable para información de intentos
       const yaInscriptoFinal = inscripcionFinalSet.has(idExamenFinal);
 
       if (yaInscriptoFinal) {
@@ -661,15 +791,48 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
           puedeInscribirse = false;
           razonBloqueo =
             "Materia ya aprobada";
-        } else if (estadoInscripcion !== "regularizada") {
+        } else if (estadoInscripcion === "desaprobada") {
+          // Si está desaprobada, no puede inscribirse
           puedeInscribirse = false;
           razonBloqueo =
-            "La cursada aún no está regularizada.";
-        } else if (tipoAlumno === 3) {
+            "Has perdido la regularidad en esta materia. Debes volver a inscribirte para poder rendir el final.";
+        } else if (tipoAlumno === TIPOS_ALUMNO.OYENTE) {
+          // Los OYENTES nunca pueden inscribirse a exámenes finales
           puedeInscribirse = false;
           razonBloqueo =
             "Los alumnos oyentes no pueden inscribirse a exámenes finales.";
+        } else if (tipoAlumno === TIPOS_ALUMNO.LIBRE) {
+          // Los LIBRES pueden inscribirse sin estar regularizados, pero solo tienen 1 intento
+          tipoAprobacion = inscripcionMateria.ciclo?.tipo_aprobacion || null;
+
+          // Verificar si el examen es del mismo ciclo lectivo que la inscripción
+          const cicleLectivoInscripcion = inscripcionMateria.ciclo?.ciclo_lectivo;
+          const cicloLectivoExamen = examen.materiaPlan?.ciclo_lectivo || new Date(examen.fecha).getFullYear();
+          
+          // Para alumnos libres, verificar que puedan rendir (1 solo intento)
+          const verificacionLibre = await verificarPuedeRendirFinalComoLibre(
+            inscripcionMateria.id,
+            idAlumno
+          );
+
+          if (!verificacionLibre.puede) {
+            puedeInscribirse = false;
+            razonBloqueo = verificacionLibre.razon;
+          } else {
+            // Alumno libre puede inscribirse
+            intentosInfo = {
+              totalIntentos: verificacionLibre.totalIntentos,
+              intentosRestantes: verificacionLibre.intentosRestantes,
+              esAlumnoLibre: true,
+            };
+          }
+        } else if (estadoInscripcion !== "regularizada") {
+          // Para REGULARES e ITINERANTES, deben estar regularizados
+          puedeInscribirse = false;
+          razonBloqueo =
+            "La cursada aún no está regularizada.";
         } else {
+          // Lógica para alumnos REGULARES e ITINERANTES
           tipoAprobacion = inscripcionMateria.ciclo?.tipo_aprobacion || null;
 
           if (!tipoAprobacion) {
@@ -677,44 +840,64 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
             razonBloqueo =
               "No se pudo determinar el tipo de aprobación de la materia para validar la inscripción.";
           } else {
-            const calificaciones = (inscripcionMateria.calificaciones || [])
-              .map((calificacion) =>
-                calificacion?.calificacion != null
-                  ? Number(calificacion.calificacion)
-                  : null
-              )
-              .filter((calificacion) => calificacion != null);
+            // Verificar intentos previos y desaprobaciones consecutivas
+            const verificacionIntentos = await verificarPuedeRendirFinal(
+              inscripcionMateria.id,
+              idAlumno,
+              tipoAprobacion
+            );
 
-            if (calificaciones.length > 0) {
-              promedioCalificaciones =
-                calificaciones.reduce((acc, nota) => acc + nota, 0) /
-                calificaciones.length;
-            }
-
-            if (tipoAprobacion === "EP") {
-              if (promedioCalificaciones == null) {
-                puedeInscribirse = false;
-                razonBloqueo =
-                  "La materia es exclusivamente promocionable y no registra calificaciones de cuatrimestre.";
-              } else if (promedioCalificaciones < 7) {
-                puedeInscribirse = false;
-                razonBloqueo =
-                  "Para materias exclusivamente promocionables el promedio de calificaciones debe ser al menos 7.";
-              }
+            if (!verificacionIntentos.puede) {
+              puedeInscribirse = false;
+              razonBloqueo = verificacionIntentos.razon;
             } else {
-              notaBase =
-                inscripcionMateria.nota_final != null
-                  ? Number(inscripcionMateria.nota_final)
-                  : promedioCalificaciones;
+              // Guardar información de intentos para mostrar al usuario
+              intentosInfo = {
+                totalIntentos: verificacionIntentos.totalIntentos,
+                intentosRestantes: verificacionIntentos.intentosRestantes,
+                desaprobacionesConsecutivas: verificacionIntentos.desaprobacionesConsecutivas,
+                desaprobacionesHastaPerderRegularidad: verificacionIntentos.desaprobacionesHastaPerderRegularidad,
+              };
 
-              if (notaBase == null) {
-                puedeInscribirse = false;
-                razonBloqueo =
-                  "La materia no registra calificaciones suficientes para validar la inscripción al examen final.";
-              } else if (notaBase < 4) {
-                puedeInscribirse = false;
-                razonBloqueo =
-                  "La calificación obtenida en la cursada debe ser igual o superior a 4 para rendir el examen final.";
+              const calificaciones = (inscripcionMateria.calificaciones || [])
+                .map((calificacion) =>
+                  calificacion?.calificacion != null
+                    ? Number(calificacion.calificacion)
+                    : null
+                )
+                .filter((calificacion) => calificacion != null);
+
+              if (calificaciones.length > 0) {
+                promedioCalificaciones =
+                  calificaciones.reduce((acc, nota) => acc + nota, 0) /
+                  calificaciones.length;
+              }
+
+              if (tipoAprobacion === "EP") {
+                if (promedioCalificaciones == null) {
+                  puedeInscribirse = false;
+                  razonBloqueo =
+                    "La materia es exclusivamente promocionable y no registra calificaciones de cuatrimestre.";
+                } else if (promedioCalificaciones < 7) {
+                  puedeInscribirse = false;
+                  razonBloqueo =
+                    "Para materias exclusivamente promocionables el promedio de calificaciones debe ser al menos 7.";
+                }
+              } else {
+                notaBase =
+                  inscripcionMateria.nota_final != null
+                    ? Number(inscripcionMateria.nota_final)
+                    : promedioCalificaciones;
+
+                if (notaBase == null) {
+                  puedeInscribirse = false;
+                  razonBloqueo =
+                    "La materia no registra calificaciones suficientes para validar la inscripción al examen final.";
+                } else if (notaBase < 4) {
+                  puedeInscribirse = false;
+                  razonBloqueo =
+                    "La calificación obtenida en la cursada debe ser igual o superior a 4 para rendir el examen final.";
+                }
               }
             }
           }
@@ -745,8 +928,9 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
         notaBase,
         tipoAlumno,
         yaInscriptoFinal,
+        intentosInfo, // Nueva información de intentos
       };
-    });
+    }));
 
     res.status(200).json({estadosFinales});
   } catch (error) {
@@ -770,6 +954,106 @@ exports.registrarInscripcionExamenFinal = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Las inscripciones a exámenes finales se encuentran cerradas"
+      });
+    }
+
+    // Verificar que existe la inscripción a materia y obtener el tipo de aprobación
+    const inscripcionMateria = await InscripcionMateria.findByPk(idInscripcionMateria, {
+      include: [
+        {
+          model: MateriaPlanCicloLectivo,
+          as: "ciclo",
+          attributes: ["tipo_aprobacion"],
+        },
+      ],
+    });
+
+    if (!inscripcionMateria) {
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró la inscripción a la materia"
+      });
+    }
+
+    const tipoAlumno = inscripcionMateria.id_tipo_alumno;
+
+    // OYENTES nunca pueden inscribirse a exámenes finales
+    if (tipoAlumno === TIPOS_ALUMNO.OYENTE) {
+      return res.status(403).json({
+        success: false,
+        message: "Los alumnos oyentes no pueden inscribirse a exámenes finales"
+      });
+    }
+
+    // Para LIBRES: no necesitan estar regularizados, pero solo tienen 1 intento
+    if (tipoAlumno === TIPOS_ALUMNO.LIBRE) {
+      // Verificar que no esté desaprobada
+      if (inscripcionMateria.estado === "Desaprobada") {
+        return res.status(403).json({
+          success: false,
+          message: "La materia está desaprobada. Debes inscribirte nuevamente para obtener otra oportunidad."
+        });
+      }
+
+      // Verificar que no esté aprobada
+      if (inscripcionMateria.estado === "Aprobada") {
+        return res.status(403).json({
+          success: false,
+          message: "La materia ya está aprobada"
+        });
+      }
+
+      // Verificar que puede rendir como libre (1 solo intento)
+      const verificacionLibre = await verificarPuedeRendirFinalComoLibre(
+        idInscripcionMateria,
+        idAlumno
+      );
+
+      if (!verificacionLibre.puede) {
+        return res.status(403).json({
+          success: false,
+          message: verificacionLibre.razon
+        });
+      }
+    } else {
+      // Para REGULARES e ITINERANTES: deben estar regularizados
+      if (inscripcionMateria.estado !== "Regularizada") {
+        return res.status(403).json({
+          success: false,
+          message: `No puedes inscribirte a este examen. Estado actual de la materia: ${inscripcionMateria.estado}`
+        });
+      }
+
+      // Verificar intentos previos y desaprobaciones consecutivas
+      const tipoAprobacion = inscripcionMateria.ciclo?.tipo_aprobacion;
+      if (tipoAprobacion) {
+        const verificacionIntentos = await verificarPuedeRendirFinal(
+          idInscripcionMateria,
+          idAlumno,
+          tipoAprobacion
+        );
+
+        if (!verificacionIntentos.puede) {
+          return res.status(403).json({
+            success: false,
+            message: verificacionIntentos.razon
+          });
+        }
+      }
+    }
+
+    // Verificar que no esté ya inscripto a este examen
+    const inscripcionExistente = await InscripcionExamenFinal.findOne({
+      where: {
+        id_usuario_alumno: idAlumno,
+        id_examen_final: idExamenFinal,
+      },
+    });
+
+    if (inscripcionExistente) {
+      return res.status(403).json({
+        success: false,
+        message: "Ya estás inscripto/a a este examen final"
       });
     }
 

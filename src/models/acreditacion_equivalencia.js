@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
             id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
             id_usuario_alumno: { type: DataTypes.INTEGER, allowNull: false },
             id_materia_destino: { type: DataTypes.INTEGER, allowNull: true },
+            id_carrera: { type: DataTypes.INTEGER, allowNull: true },
             origen_institucion: { type: DataTypes.STRING(120), allowNull: false },
             origen_materia: { type: DataTypes.STRING(120), allowNull: false },
             origen_calificacion: { type: DataTypes.STRING(20), allowNull: false },
@@ -21,6 +22,7 @@ module.exports = (sequelize, DataTypes) => {
             indexes: [
                 { fields: ['id_usuario_alumno', 'estado'] },
                 { fields: ['id_materia_destino'] },
+                { fields: ['id_carrera'] }
             ]
         }
     )

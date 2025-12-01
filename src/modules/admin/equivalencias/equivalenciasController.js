@@ -23,8 +23,46 @@ const sequelize = require('../../../config/db');
 exports.registrarSolicitud = async (req, res, next) => {
   try {
     const alumnoId = req.user.id;
-    const { origenInstitucion, origenMateria, origenCalificacion, resolucion } =
+    const { origenInstitucion, origenMateria, origenCalificacion, resolucion, idCarrera } =
       req.body;
+
+    // Validar que el alumno tenga al menos una carrera activa
+    const usuario = await Usuario.findByPk(alumnoId, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    const carrerasActivas = await AlumnoCarrera.findAll({
+      where: {
+        id_persona: usuario.id_persona,
+        activo: 1
+      }
+    });
+
+    if (carrerasActivas.length === 0) {
+      return res.status(403).json({
+        message: "No tienes carreras activas. Debes estar inscripto y activo en al menos una carrera para solicitar equivalencias"
+      });
+    }
+
+    // Determinar id_carrera: si se envió, validar que sea activa; si no, usar la primera activa
+    let carreraFinal = null;
+    if (idCarrera) {
+      // Validar que la carrera enviada esté entre las activas del alumno
+      const carreraActiva = carrerasActivas.find(c => c.id_carrera === parseInt(idCarrera));
+      if (!carreraActiva) {
+        return res.status(400).json({
+          message: "La carrera seleccionada no está activa o no pertenece a tu lista de carreras"
+        });
+      }
+      carreraFinal = parseInt(idCarrera);
+    } else {
+      // Si no se envió, usar la primera carrera activa (para compatibilidad con alumnos de una sola carrera)
+      carreraFinal = carrerasActivas[0].id_carrera;
+    }
 
     // Validar datos requeridos
     if (!origenInstitucion || !origenMateria || !origenCalificacion) {
@@ -37,6 +75,7 @@ exports.registrarSolicitud = async (req, res, next) => {
     const nuevaSolicitud = await AcreditacionEquivalencia.create({
       id_usuario_alumno: alumnoId,
       id_materia_destino: null,
+      id_carrera: carreraFinal,
       origen_institucion: origenInstitucion,
       origen_materia: origenMateria,
       origen_calificacion: origenCalificacion,
@@ -63,6 +102,13 @@ exports.obtenerSolicitudesAlumno = async (req, res, next) => {
       where: {
         id_usuario_alumno: alumnoId
       },
+      include: [
+        {
+          model: Carrera,
+          as: 'carrera',
+          attributes: ['id', 'nombre']
+        }
+      ],
       order: [['fecha_solicitud', 'DESC']]
     });
 
@@ -131,11 +177,17 @@ exports.obtenerAlumnosConSolicitudes = async (req, res, next) => {
               attributes: ['nombre', 'apellido', 'dni', 'email']
             }
           ]
+        },
+        {
+          model: Carrera,
+          as: 'carrera',
+          attributes: ['id', 'nombre']
         }
       ],
       attributes: [
         'id',
         'id_usuario_alumno',
+        'id_carrera',
         'origen_institucion',
         'origen_materia', 
         'origen_calificacion',

@@ -3,6 +3,26 @@
  */
 
 /**
+ * Formatea una fecha en formato dd/mm/aaaa
+ * @param {Date|string} fecha - Fecha a formatear
+ * @returns {string} Fecha en formato dd/mm/aaaa
+ */
+const formatearFecha = (fecha) => {
+  if (!fecha) return '';
+  
+  try {
+    const fechaObj = fecha instanceof Date ? fecha : new Date(fecha);
+    const day = String(fechaObj.getDate()).padStart(2, '0');
+    const month = String(fechaObj.getMonth() + 1).padStart(2, '0');
+    const year = fechaObj.getFullYear();
+    
+    return `${day}/${month}/${year}`;
+  } catch (error) {
+    return '';
+  }
+};
+
+/**
  * Parsea una fecha del frontend y la convierte en fecha local sin zona horaria
  * @param {string} fechaString - Fecha en formato string del frontend
  * @returns {Date|null} Fecha parseada o null si es inválida
@@ -43,6 +63,7 @@ const compararSoloFechas = (fecha1, fecha2) => {
 };
 
 module.exports = {
+  formatearFecha,
   parsearFechaLocal,
   compararSoloFechas
 };

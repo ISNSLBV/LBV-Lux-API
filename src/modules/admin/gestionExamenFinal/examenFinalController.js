@@ -16,6 +16,12 @@ const {
   parsearFechaLocal,
   compararSoloFechas,
 } = require("../../../utils/dateUtils");
+const {
+  esNotaAprobatoria,
+  debeDesaprobarInscripcionMateria,
+  CONSTANTES_EXAMENES,
+  TIPOS_ALUMNO,
+} = require("../../../utils/examenFinalUtils");
 
 const registrarExamenFinal = async (req, res) => {
   try {
@@ -286,6 +292,16 @@ const detalleExamenFinal = async (req, res) => {
         },
         {
           model: Usuario,
+          as: "ProfesorVocal",
+          include: [
+            {
+              model: Persona,
+              as: "persona",
+            },
+          ],
+        },
+        {
+          model: Usuario,
           as: "usuarioCreador",
           include: [
             {
@@ -327,6 +343,8 @@ const detalleExamenFinal = async (req, res) => {
       id_materia: examen.materiaPlan?.materia?.id || null,
       estado: examen.estado,
       fecha: examen.fecha,
+      libro: examen.libro,
+      folio: examen.folio,
       carrera:
         examen.materiaPlan?.planEstudio?.carrera?.nombre || "Sin carrera",
       resolucion:
@@ -337,6 +355,14 @@ const detalleExamenFinal = async (req, res) => {
         apellido: examen.Profesor?.persona?.apellido,
         email: examen.Profesor?.persona?.email,
       },
+      profesorVocal: examen.ProfesorVocal
+        ? {
+            id: examen.ProfesorVocal?.id,
+            nombre: examen.ProfesorVocal?.persona?.nombre,
+            apellido: examen.ProfesorVocal?.persona?.apellido,
+            email: examen.ProfesorVocal?.persona?.email,
+          }
+        : null,
       alumnos: (examen.inscripciones || []).map((inscripcion) => ({
         id_inscripcion: inscripcion.id,
         id_usuario: inscripcion.alumno?.id,
@@ -460,7 +486,8 @@ const registrarAsistencia = async (req, res) => {
     if (asistenciaExistente && userRole !== "Administrador") {
       return res.status(403).json({
         success: false,
-        message: "La asistencia ya fue registrada. Solo un administrador puede modificarla.",
+        message:
+          "La asistencia ya fue registrada. Solo un administrador puede modificarla.",
       });
     }
 
@@ -575,7 +602,9 @@ const actualizarCalificacion = async (req, res) => {
     }
 
     // Parsear el idInscripcion compuesto (formato: "id_usuario_alumno-id_examen_final")
-    const [id_usuario_alumno, id_examen_final] = idInscripcion.split('-').map(Number);
+    const [id_usuario_alumno, id_examen_final] = idInscripcion
+      .split("-")
+      .map(Number);
 
     if (!id_usuario_alumno || !id_examen_final) {
       return res.status(400).json({
@@ -623,7 +652,10 @@ const actualizarCalificacion = async (req, res) => {
     }
 
     // Verificar que el profesor que intenta calificar es el asignado al examen
-    if (userRole === "Profesor" && inscripcion.examenFinal.id_usuario_profesor !== userId) {
+    if (
+      userRole === "Profesor" &&
+      inscripcion.examenFinal.id_usuario_profesor !== userId
+    ) {
       return res.status(403).json({
         success: false,
         message: "Solo el profesor asignado a este examen puede calificar.",
@@ -639,70 +671,86 @@ const actualizarCalificacion = async (req, res) => {
       });
     }
 
-    const datosPreviosInscripcionMateria = inscripcion.inscripcionMateria ? {
-      estado: inscripcion.inscripcionMateria.estado,
-      nota_final: inscripcion.inscripcionMateria.nota_final,
-      fecha_finalizacion: inscripcion.inscripcionMateria.fecha_finalizacion,
-      origen_aprobacion: inscripcion.inscripcionMateria.origen_aprobacion,
-    } : null;
+    const datosPreviosInscripcionMateria = inscripcion.inscripcionMateria
+      ? {
+          estado: inscripcion.inscripcionMateria.estado,
+          nota_final: inscripcion.inscripcionMateria.nota_final,
+          fecha_finalizacion: inscripcion.inscripcionMateria.fecha_finalizacion,
+          origen_aprobacion: inscripcion.inscripcionMateria.origen_aprobacion,
+        }
+      : null;
 
     // Determinar si es la primera vez que se pone nota (para bloqueo automático)
-    const esPrimeraVez = inscripcion.nota === null || inscripcion.nota === undefined;
+    const esPrimeraVez =
+      inscripcion.nota === null || inscripcion.nota === undefined;
 
     // Actualizar calificación en InscripcionExamenFinal
     inscripcion.nota = calificacion;
-    
+
     // Bloquear automáticamente cuando un profesor pone la nota por primera vez
     if (userRole === "Profesor" && esPrimeraVez) {
       inscripcion.bloqueada = true;
     }
-    
+
     inscripcion.modificado_por = userId;
     await inscripcion.save();
 
     // Actualizar estado en inscripcion_materia según tipo de aprobación
     if (inscripcion.inscripcionMateria) {
-      const tipoAprobacion = inscripcion.examenFinal?.materiaPlan?.ciclos?.[0]?.tipo_aprobacion;
+      const tipoAprobacion =
+        inscripcion.examenFinal?.materiaPlan?.ciclos?.[0]?.tipo_aprobacion;
+      const tipoAlumno = inscripcion.inscripcionMateria.id_tipo_alumno;
       let nuevoEstado = null;
 
       if (tipoAprobacion) {
-        // EP (Exclusivamente Promocionable): 7 o más = Aprobada, menos de 7 = Desaprobada
-        // P (Promocionable): 7 o más = Aprobada, 4 a 6.99 = Regularizada, menos de 4 = Desaprobada
-        // NP (No Promocionable): 4 o más = Aprobada, menos de 4 = Desaprobada
-        if (tipoAprobacion === "EP") {
-          nuevoEstado = calificacion >= 7 ? "Aprobada" : "Desaprobada";
-        } else if (tipoAprobacion === "P") {
-          if (calificacion >= 7) {
-            nuevoEstado = "Aprobada";
-          } else if (calificacion >= 4) {
-            nuevoEstado = "Regularizada";
-          } else {
+        // Determinar si la nota es aprobatoria según el tipo de aprobación
+        const notaAprobatoria = esNotaAprobatoria(calificacion, tipoAprobacion);
+
+        if (notaAprobatoria) {
+          // Si aprueba el final, la materia queda aprobada
+          nuevoEstado = "Aprobada";
+        } else {
+          // Si desaprueba el final, verificar si debe perder la regularidad
+          // Para alumnos LIBRES: 1 desaprobación = materia desaprobada
+          // Para REGULARES/ITINERANTES: solo después de 4 desaprobaciones consecutivas
+          const verificacionDesaprobacion = await debeDesaprobarInscripcionMateria(
+            inscripcion.id_inscripcion_materia,
+            id_usuario_alumno,
+            tipoAprobacion,
+            calificacion,
+            tipoAlumno // Pasar el tipo de alumno para la validación específica
+          );
+
+          if (verificacionDesaprobacion.debeDesaprobar) {
+            // El alumno perdió la regularidad
             nuevoEstado = "Desaprobada";
           }
-        } else if (tipoAprobacion === "NP") {
-          nuevoEstado = calificacion >= 4 ? "Aprobada" : "Desaprobada";
+          // Si no debe desaprobar, no cambiamos el estado de inscripcion_materia
+          // El alumno mantiene su estado "Regularizada" y puede volver a intentar
         }
 
         if (nuevoEstado) {
           inscripcion.inscripcionMateria.estado = nuevoEstado;
           inscripcion.inscripcionMateria.modificado_por = userId;
-          
+
           // Si el estado es "Aprobada", actualizar campos adicionales
           if (nuevoEstado === "Aprobada") {
             inscripcion.inscripcionMateria.nota_final = calificacion;
             inscripcion.inscripcionMateria.fecha_finalizacion = new Date();
             inscripcion.inscripcionMateria.origen_aprobacion = "Final";
-            inscripcion.inscripcionMateria.id_inscripcion_examen_final_aprobatorio = id_examen_final;
-          } else {
-            // Si cambió de Aprobada a otro estado, limpiar los campos
+            inscripcion.inscripcionMateria.id_inscripcion_examen_final_aprobatorio =
+              inscripcion.id;
+          } else if (nuevoEstado === "Desaprobada") {
+            // Si cambió a Desaprobada, limpiar campos de aprobación si existían
             if (datosPreviosInscripcionMateria?.estado === "Aprobada") {
               inscripcion.inscripcionMateria.nota_final = null;
               inscripcion.inscripcionMateria.fecha_finalizacion = null;
               inscripcion.inscripcionMateria.origen_aprobacion = null;
-              inscripcion.inscripcionMateria.id_inscripcion_examen_final_aprobatorio = null;
+              inscripcion.inscripcionMateria.id_inscripcion_examen_final_aprobatorio =
+                null;
             }
           }
-          
+
           await inscripcion.inscripcionMateria.save();
         }
       }
@@ -814,7 +862,9 @@ const bloquearCalificacion = async (req, res) => {
     }
 
     // Parsear el idInscripcion compuesto (formato: "id_usuario_alumno-id_examen_final")
-    const [id_usuario_alumno, id_examen_final] = idInscripcion.split('-').map(Number);
+    const [id_usuario_alumno, id_examen_final] = idInscripcion
+      .split("-")
+      .map(Number);
 
     if (!id_usuario_alumno || !id_examen_final) {
       return res.status(400).json({
@@ -953,6 +1003,180 @@ const obtenerProfesoresPorMateria = async (req, res) => {
   }
 };
 
+// Obtener profesores disponibles como vocales para un examen (profesores que tengan exámenes el mismo día)
+const obtenerProfesoresVocalesDisponibles = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Buscar el examen actual
+    const examen = await ExamenFinal.findByPk(id, {
+      attributes: ["id", "fecha", "id_usuario_profesor"],
+    });
+
+    if (!examen || !examen.fecha) {
+      return res.status(404).json({
+        success: false,
+        message: "Examen no encontrado o sin fecha asignada",
+      });
+    }
+
+    // Buscar todos los exámenes del mismo día
+    const fechaExamen = new Date(examen.fecha);
+    const inicioDia = new Date(fechaExamen.setHours(0, 0, 0, 0));
+    const finDia = new Date(fechaExamen.setHours(23, 59, 59, 999));
+
+    const examenesDelDia = await ExamenFinal.findAll({
+      where: {
+        fecha: {
+          [require("sequelize").Op.between]: [inicioDia, finDia],
+        },
+        id: {
+          [require("sequelize").Op.ne]: id, // Excluir el examen actual
+        },
+      },
+      attributes: ["id", "id_usuario_profesor"],
+      include: [
+        {
+          model: Usuario,
+          as: "Profesor",
+          attributes: ["id"],
+          include: [
+            {
+              model: Persona,
+              as: "persona",
+              attributes: ["nombre", "apellido", "email"],
+            },
+          ],
+        },
+      ],
+    });
+
+    // Extraer profesores únicos (excluir el profesor del examen actual)
+    const profesoresMap = new Map();
+    examenesDelDia.forEach((ex) => {
+      if (
+        ex.Profesor &&
+        ex.id_usuario_profesor !== examen.id_usuario_profesor
+      ) {
+        const profesorId = ex.Profesor.id;
+        if (!profesoresMap.has(profesorId)) {
+          profesoresMap.set(profesorId, {
+            id: ex.Profesor.id,
+            nombre: ex.Profesor.persona?.nombre,
+            apellido: ex.Profesor.persona?.apellido,
+            email: ex.Profesor.persona?.email,
+          });
+        }
+      }
+    });
+
+    const profesoresDisponibles = Array.from(profesoresMap.values());
+
+    res.status(200).json({
+      success: true,
+      data: profesoresDisponibles,
+      message: `Se encontraron ${profesoresDisponibles.length} profesores disponibles para actuar como vocal`,
+    });
+  } catch (error) {
+    console.error("Error al obtener profesores vocales:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+// Finalizar examen (solo el profesor asignado puede hacerlo)
+const finalizarExamen = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { libro, folio, id_profesor_vocal } = req.body;
+    const userId = req.user.id;
+    const userRole = req.user.rol;
+
+    // Validar campos requeridos
+    if (!libro || !folio || !id_profesor_vocal) {
+      return res.status(400).json({
+        success: false,
+        message: "Los campos libro, folio y profesor vocal son requeridos",
+      });
+    }
+
+    // Buscar el examen
+    const examen = await ExamenFinal.findByPk(id);
+
+    if (!examen) {
+      return res.status(404).json({
+        success: false,
+        message: "Examen no encontrado",
+      });
+    }
+
+    // Verificar que el estado sea "Pendiente"
+    if (examen.estado !== "Pendiente") {
+      return res.status(400).json({
+        success: false,
+        message: `El examen ya está en estado "${examen.estado}". Solo se pueden finalizar exámenes en estado "Pendiente"`,
+      });
+    }
+
+    // Verificar que el usuario sea el profesor asignado al examen
+    if (examen.id_usuario_profesor !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "Solo el profesor asignado a este examen puede finalizarlo",
+      });
+    }
+
+    // Verificar que el profesor vocal exista
+    const profesorVocal = await Usuario.findByPk(id_profesor_vocal);
+    if (!profesorVocal) {
+      return res.status(404).json({
+        success: false,
+        message: "El profesor vocal especificado no existe",
+      });
+    }
+
+    // Actualizar el examen
+    examen.libro = libro;
+    examen.folio = folio;
+    examen.id_profesor_vocal = id_profesor_vocal;
+    examen.estado = "Finalizado";
+    examen.modificado_por = userId;
+    await examen.save();
+
+    // Obtener el examen actualizado con las relaciones
+    const examenActualizado = await ExamenFinal.findByPk(id, {
+      include: [
+        {
+          model: Usuario,
+          as: "Profesor",
+          include: [{ model: Persona, as: "persona" }],
+        },
+        {
+          model: Usuario,
+          as: "ProfesorVocal",
+          include: [{ model: Persona, as: "persona" }],
+        },
+      ],
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Examen finalizado correctamente",
+      data: examenActualizado,
+    });
+  } catch (error) {
+    console.error("Error al finalizar examen:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   registrarExamenFinal,
   listarExamenesFinales,
@@ -964,4 +1188,6 @@ module.exports = {
   actualizarConfiguracion,
   bloquearCalificacion,
   obtenerProfesoresPorMateria,
+  obtenerProfesoresVocalesDisponibles,
+  finalizarExamen,
 };

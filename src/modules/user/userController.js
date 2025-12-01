@@ -191,29 +191,73 @@ exports.perfil = async (req, res, next) => {
     };
 
     const carreras = usuario.persona.carreras;
-    let carreraActiva =
-      carreras.find((c) => c.activo === 1) || carreras[0] || {};
-
-    // Obtener total de materias del plan de estudios vigente
-    let totalMateriasPlan = 0;
-    if (
-      carreraActiva.carrera &&
-      carreraActiva.carrera.planesEstudio &&
-      carreraActiva.carrera.planesEstudio.length > 0
-    ) {
-      const planVigente = carreraActiva.carrera.planesEstudio[0]; // Ya filtrado por vigente: 1
-      totalMateriasPlan = planVigente.materiaPlans
-        ? planVigente.materiaPlans.length
+    
+    // Preparar información por carrera
+    const carrerasList = carreras.map((carreraAlumno) => {
+      const carrera = carreraAlumno.carrera;
+      const planVigente = carrera.planesEstudio && carrera.planesEstudio[0];
+      const totalMateriasPlan = planVigente?.materiaPlans?.length || 0;
+      
+      // Filtrar inscripciones de esta carrera específica
+      const inscripcionesCarrera = usuario.inscripciones.filter(
+        (i) => i.ciclo?.materiaPlan?.planEstudio?.carrera?.id === carrera.id
+      );
+      
+      // Calcular materias aprobadas únicas para esta carrera
+      const materiasAprobadasIdsCarrera = new Set();
+      inscripcionesCarrera
+        .filter((i) => i.estado === "Aprobada")
+        .forEach((i) => {
+          if (i.ciclo?.materiaPlan?.id_materia) {
+            materiasAprobadasIdsCarrera.add(i.ciclo.materiaPlan.id_materia);
+          }
+        });
+      
+      // Calcular promedio para esta carrera
+      const notasAprobadasCarrera = inscripcionesCarrera
+        .filter((i) => i.estado === "Aprobada" && i.nota_final !== null)
+        .map((i) => parseFloat(i.nota_final));
+      
+      const promedioCarrera = notasAprobadasCarrera.length > 0
+        ? notasAprobadasCarrera.reduce((sum, nota) => sum + nota, 0) / notasAprobadasCarrera.length
         : 0;
-    }
+      
+      return {
+        id: carrera.id,
+        nombre: carrera.nombre,
+        activo: carreraAlumno.activo === 1,
+        fechaInscripcion: carreraAlumno.fecha_inscripcion,
+        promedio: promedioCarrera.toFixed(1),
+        materiasAprobadas: materiasAprobadasIdsCarrera.size,
+        totalMateriasPlan,
+        materias: inscripcionesCarrera.map((i) => ({
+          nombre: i.ciclo.materiaPlan.materia.nombre,
+          profesor: "—",
+          estado: i.estado,
+          horario: i.ciclo.horarios
+            .map((h) => `${h.dia_semana}-${h.bloque}`)
+            .join(", "),
+          nota: i.nota_final,
+        })),
+        horarios: inscripcionesCarrera.flatMap((i) =>
+          i.ciclo.horarios.map((h) => ({
+            nombre: i.ciclo.materiaPlan.materia.nombre,
+            profesor: "—",
+            horario: `Día ${h.dia_semana} Bloque ${h.bloque}`,
+          }))
+        ),
+      };
+    });
+    
+    // Carrera activa por defecto (primera activa o primera en la lista)
+    const carreraActivaIndex = carrerasList.findIndex((c) => c.activo);
+    const carreraDefault = carrerasList[carreraActivaIndex !== -1 ? carreraActivaIndex : 0] || {};
 
     const informacionPersonal = {
       nombre: `${usuario.persona.nombre} ${usuario.persona.apellido}`,
       fechaNacimiento: usuario.persona.fecha_nacimiento,
       dni: usuario.persona.dni,
-      ingreso: carreraActiva.fecha_inscripcion
-        ? carreraActiva.fecha_inscripcion
-        : null,
+      ingreso: carreraDefault.fechaInscripcion || null,
       carrera: carreras.map((c) => c.carrera.nombre).join(", "),
     };
 
@@ -223,7 +267,7 @@ exports.perfil = async (req, res, next) => {
         { iconoKey: "promedio", valor: promedio.toFixed(1) },
         {
           iconoKey: "aprobadas",
-          valor: `${materiasAprobadasUnicas}/${totalMateriasPlan}`,
+          valor: `${materiasAprobadasUnicas}/${carreraDefault.totalMateriasPlan || 0}`,
         },
       ],
       horarios: usuario.inscripciones.flatMap((i) =>
@@ -243,6 +287,7 @@ exports.perfil = async (req, res, next) => {
         nota: i.nota_final,
       })),
       promedioGeneral: promedio.toFixed(1),
+      carreras: carrerasList,
       // Agregar inscripciones con año de carrera para certificados
       inscripcionesActuales: usuario.inscripciones.map((i) => ({
         estado: i.estado,
@@ -799,8 +844,16 @@ exports.listarAlumnos = async (req, res, next) => {
         }
 
         const carreras = alumno.persona.carreras || [];
-        const carreraActiva =
-          carreras.find((c) => c.activo === 1) || carreras[0];
+        
+        // Formatear todas las carreras del alumno
+        const carrerasFormateadas = carreras.map(c => ({
+          id: c.carrera?.id || null,
+          nombre: c.carrera?.nombre || "Sin carrera",
+          fechaInscripcion: c.fecha_inscripcion || null,
+          activo: c.activo === 1,
+          idPlanEstudioAsignado: c.id_plan_estudio_asignado || null,
+          resolucionPlanAsignado: c.planEstudio?.resolucion || null,
+        }));
 
         return {
           id: alumno.id,
@@ -810,13 +863,7 @@ exports.listarAlumnos = async (req, res, next) => {
           dni: alumno.persona.dni,
           email: alumno.persona.email,
           telefono: alumno.persona.telefono,
-          carrera: {
-            id: carreraActiva?.carrera?.id || null,
-            nombre: carreraActiva?.carrera?.nombre || "Sin carrera",
-          },
-          fechaInscripcion: carreraActiva?.fecha_inscripcion || null,
-          activo: carreraActiva?.activo === 1,
-          resolucionPlanAsignado: carreraActiva?.planEstudio?.resolucion || null,
+          carreras: carrerasFormateadas,
         };
       })
       .filter((alumno) => alumno !== null); // Filtrar elementos nulos
@@ -839,3 +886,247 @@ exports.obtenerIdPersona = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.modificarPlanEstudio = async (req, res, next) => {
+  try {
+    const { idUsuario, idCarrera } = req.params;
+    const { idPlanEstudio } = req.body;
+
+    // Obtener id_persona del usuario
+    const usuario = await Usuario.findByPk(idUsuario, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    // Validar que el plan de estudios exista y pertenezca a la carrera
+    const planEstudio = await PlanEstudio.findOne({
+      where: {
+        id: idPlanEstudio,
+        id_carrera: idCarrera
+      }
+    });
+
+    if (!planEstudio) {
+      return res.status(404).json({ 
+        message: "El plan de estudios no existe o no pertenece a la carrera especificada" 
+      });
+    }
+
+    // Buscar la relación alumno-carrera
+    const alumnoCarrera = await AlumnoCarrera.findOne({
+      where: {
+        id_persona: usuario.id_persona,
+        id_carrera: idCarrera
+      }
+    });
+
+    if (!alumnoCarrera) {
+      return res.status(404).json({ 
+        message: "El alumno no está inscripto en esta carrera" 
+      });
+    }
+
+    // Actualizar el plan de estudios asignado
+    alumnoCarrera.id_plan_estudio_asignado = idPlanEstudio;
+    await alumnoCarrera.save();
+
+    res.json({ 
+      message: "Plan de estudios actualizado correctamente",
+      alumnoCarrera 
+    });
+  } catch (error) {
+    console.error("Error al modificar plan de estudios:", error);
+    next(error);
+  }
+};
+
+exports.darDeBajaAlumnoCarrera = async (req, res, next) => {
+  try {
+    const { idUsuario, idCarrera } = req.params;
+
+    // Obtener id_persona del usuario
+    const usuario = await Usuario.findByPk(idUsuario, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    // Buscar la relación alumno-carrera
+    const alumnoCarrera = await AlumnoCarrera.findOne({
+      where: {
+        id_persona: usuario.id_persona,
+        id_carrera: idCarrera
+      }
+    });
+
+    if (!alumnoCarrera) {
+      return res.status(404).json({ 
+        message: "El alumno no está inscripto en esta carrera" 
+      });
+    }
+
+    // Verificar si ya está dado de baja
+    if (alumnoCarrera.activo === 0) {
+      return res.status(400).json({ 
+        message: "El alumno ya está dado de baja en esta carrera" 
+      });
+    }
+
+    // Dar de baja (cambiar activo a 0)
+    alumnoCarrera.activo = 0;
+    await alumnoCarrera.save();
+
+    res.json({ 
+      message: "Alumno dado de baja correctamente de la carrera",
+      alumnoCarrera 
+    });
+  } catch (error) {
+    console.error("Error al dar de baja alumno:", error);
+    next(error);
+  }
+};
+
+exports.reactivarAlumnoCarrera = async (req, res, next) => {
+  try {
+    const { idUsuario, idCarrera } = req.params;
+
+    // Obtener id_persona del usuario
+    const usuario = await Usuario.findByPk(idUsuario, {
+      attributes: ["id_persona"]
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    // Buscar la relación alumno-carrera
+    const alumnoCarrera = await AlumnoCarrera.findOne({
+      where: {
+        id_persona: usuario.id_persona,
+        id_carrera: idCarrera
+      }
+    });
+
+    if (!alumnoCarrera) {
+      return res.status(404).json({ 
+        message: "El alumno no está inscripto en esta carrera" 
+      });
+    }
+
+    // Verificar si ya está activo
+    if (alumnoCarrera.activo === 1) {
+      return res.status(400).json({ 
+        message: "El alumno ya está activo en esta carrera" 
+      });
+    }
+
+    // Reactivar (cambiar activo a 1)
+    alumnoCarrera.activo = 1;
+    await alumnoCarrera.save();
+
+    res.json({ 
+      message: "Alumno reactivado correctamente en la carrera",
+      alumnoCarrera 
+    });
+  } catch (error) {
+    console.error("Error al reactivar alumno:", error);
+    next(error);
+  }
+};
+
+exports.obtenerPlanesCarrera = async (req, res, next) => {
+  try {
+    const { idCarrera } = req.params;
+
+    const planes = await PlanEstudio.findAll({
+      where: { id_carrera: idCarrera },
+      attributes: ["id", "resolucion", "vigente"],
+      order: [["vigente", "DESC"], ["resolucion", "DESC"]]
+    });
+
+    res.json(planes);
+  } catch (error) {
+    console.error("Error al obtener planes de estudios:", error);
+    next(error);
+  }
+};
+
+exports.verificarEstadoCarreras = async (req, res, next) => {
+  try {
+    const idUsuario = req.user.id;
+
+    // Obtener usuario y sus carreras
+    const usuario = await Usuario.findByPk(idUsuario, {
+      attributes: ["id", "id_persona"],
+      include: [
+        {
+          model: Persona,
+          as: "persona",
+          attributes: ["id"],
+          include: [
+            {
+              model: AlumnoCarrera,
+              as: "carreras",
+              attributes: ["id", "id_carrera", "activo"],
+              include: [
+                {
+                  model: Carrera,
+                  as: "carrera",
+                  attributes: ["id", "nombre"]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!usuario || !usuario.persona) {
+      return res.status(404).json({ 
+        message: "Usuario no encontrado",
+        puedeAcceder: false,
+        carrerasActivas: [],
+        carrerasInactivas: [],
+        todasInactivas: true
+      });
+    }
+
+    const carreras = usuario.persona.carreras || [];
+    const carrerasActivas = carreras.filter(c => c.activo === 1);
+    const carrerasInactivas = carreras.filter(c => c.activo === 0);
+
+    // Determinar si puede acceder a las secciones
+    const puedeAcceder = carrerasActivas.length > 0;
+    const todasInactivas = carreras.length > 0 && carrerasActivas.length === 0;
+
+    res.json({
+      puedeAcceder,
+      todasInactivas,
+      carrerasActivas: carrerasActivas.map(c => ({
+        id: c.id_carrera,
+        nombre: c.carrera?.nombre,
+        activo: true
+      })),
+      carrerasInactivas: carrerasInactivas.map(c => ({
+        id: c.id_carrera,
+        nombre: c.carrera?.nombre,
+        activo: false
+      })),
+      totalCarreras: carreras.length,
+      mensaje: todasInactivas 
+        ? "Estás dado de baja en todas tus carreras. No puedes acceder a inscripciones ni solicitar equivalencias."
+        : puedeAcceder
+        ? "Tienes acceso a las funcionalidades del sistema."
+        : "No estás inscripto en ninguna carrera."
+    });
+  } catch (error) {
+    console.error("Error al verificar estado de carreras:", error);
+    next(error);
+  }
+};
+

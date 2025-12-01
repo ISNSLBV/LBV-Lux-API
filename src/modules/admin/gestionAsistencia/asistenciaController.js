@@ -1,12 +1,37 @@
-const { Asistencia, Clase } = require("../../../models");
+const { Asistencia, Clase, InscripcionMateria, MateriaPlanCicloLectivo } = require("../../../models");
+const {
+  puedeRecibirAsistencia,
+} = require("../../../utils/examenFinalUtils");
 
 exports.registrarAsistencia = async (req, res, next) => {
   const { claseId, alumnoId, estado, profesorRegistroId } = req.body;
 
   try {
-    const clase = await Clase.findByPk(claseId);
+    const clase = await Clase.findByPk(claseId, {
+      attributes: ["id", "id_materia_plan_ciclo_lectivo"],
+    });
     if (!clase) {
       return res.status(404).json({ error: "Clase no encontrada" });
+    }
+
+    // Buscar la inscripción a la materia del alumno para verificar el tipo de alumno
+    const inscripcionMateria = await InscripcionMateria.findOne({
+      where: {
+        id_usuario_alumno: alumnoId,
+        id_materia_plan_ciclo_lectivo: clase.id_materia_plan_ciclo_lectivo,
+      },
+      attributes: ["id_tipo_alumno"],
+    });
+
+    if (inscripcionMateria) {
+      // Validar si el tipo de alumno puede tener asistencia registrada
+      const validacionTipoAlumno = puedeRecibirAsistencia(
+        inscripcionMateria.id_tipo_alumno
+      );
+
+      if (!validacionTipoAlumno.puede) {
+        return res.status(403).json({ error: validacionTipoAlumno.razon });
+      }
     }
 
     const asistenciaExistente = await Asistencia.findOne({

@@ -17,6 +17,7 @@ const path = require("path");
 const fs = require("fs");
 const puppeteer = require("puppeteer");
 const handlebars = require("handlebars");
+const { formatearFecha } = require("../../../utils/dateUtils");
 
 exports.listarPreinscripcion = async (req, res, next) => {
   try {
@@ -282,7 +283,7 @@ exports.generarFichaInscripcion = async (req, res, next) => {
       celular: persona.telefono,
       email: persona.email,
       fechaNacimiento: persona.fecha_nacimiento
-        ? new Date(persona.fecha_nacimiento).toLocaleDateString("es-AR")
+        ? formatearFecha(persona.fecha_nacimiento)
         : "",
       lugarNacimiento: "", // A completar a mano
       provincia: "", // A completar a mano

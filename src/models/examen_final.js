@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
       fecha:                        { type: DataTypes.DATE },
       estado:                       { type: DataTypes.STRING(20), defaultValue: 'Pendiente' },
       id_usuario_profesor:          { type: DataTypes.INTEGER, allowNull: false },
+      libro:                        { type: DataTypes.STRING(20), allowNull: true },
+      folio:                        { type: DataTypes.STRING(20), allowNull: true },
+      id_profesor_vocal:            { type: DataTypes.INTEGER, allowNull: true },
       creado_por:                   { type: DataTypes.INTEGER, allowNull: false },
       fecha_creacion:               { type: DataTypes.DATE, defaultValue: sequelize.literal('CURRENT_TIMESTAMP') },
       modificado_por:               { type: DataTypes.INTEGER },
@@ -20,7 +23,8 @@ module.exports = (sequelize, DataTypes) => {
       tableName: 'examen_final',
       timestamps: false,
       indexes: [
-        { fields: ['fecha'] }
+        { fields: ['fecha'] },
+        { fields: ['id_profesor_vocal'] }
       ]
     }
   );

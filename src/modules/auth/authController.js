@@ -112,9 +112,9 @@ exports.me = (req, res) => {
  */
 exports.solicitarRecuperacion = async (req, res, next) => {
   try {
-    const { identifier } = req.body; // username o email
+    const { identificador, forzarReenvio } = req.body; // username o email + flag para reenviar
 
-    if (!identifier || identifier.trim() === '') {
+    if (!identificador || identificador.trim() === '') {
       return res.status(400).json({ 
         message: "Debe proporcionar su nombre de usuario o email" 
       });
@@ -122,7 +122,7 @@ exports.solicitarRecuperacion = async (req, res, next) => {
 
     // Buscar usuario por username o por email de su persona
     const usuario = await Usuario.findOne({
-      where: { username: identifier.trim() },
+      where: { username: identificador.trim() },
       include: [{ model: Persona, as: "persona", required: true }],
     });
 
@@ -130,7 +130,7 @@ exports.solicitarRecuperacion = async (req, res, next) => {
     if (!usuario) {
       // Intentar buscar por email
       const persona = await Persona.findOne({
-        where: { email: identifier.trim() },
+        where: { email: identificador.trim() },
       });
       
       if (persona) {
@@ -157,19 +157,26 @@ exports.solicitarRecuperacion = async (req, res, next) => {
       'password_reset'
     );
     
-    if (hasPending) {
+    // Si hay una solicitud pendiente y NO se está forzando reenvío, rechazar
+    if (hasPending && !forzarReenvio) {
       const timeRemaining = await verificationService.getTimeRemaining(
         usuarioEncontrado.id, 
         'password_reset'
       );
       return res.status(429).json({ 
         message: "Ya existe una solicitud pendiente. Espera a que expire o usa el código enviado.",
-        timeRemaining: timeRemaining > 0 ? timeRemaining : 0
+        timeRemaining: timeRemaining > 0 ? timeRemaining : 0,
+        canResend: true // Indicar al frontend que puede solicitar reenvío
       });
     }
 
+    // Si se está forzando reenvío, eliminar la solicitud anterior primero
+    if (hasPending && forzarReenvio) {
+      await verificationService.deletePasswordResetRequest(usuarioEncontrado.id);
+    }
+
     const expirationMinutes = 15;
-    const code = await verificationService.createPasswordResetRequest(
+    const { code, recoveryToken } = await verificationService.createPasswordResetRequest(
       usuarioEncontrado.id,
       usuarioEncontrado.persona.email,
       usuarioEncontrado.username,
@@ -192,14 +199,15 @@ exports.solicitarRecuperacion = async (req, res, next) => {
     // Enviar email
     await enviarCorreo({
       to: usuarioEncontrado.persona.email,
-      subject: 'Recuperación de contraseña - Sistema LUX',
+      subject: 'Recuperación de contraseña | ISNSLBV',
       html
     });
 
     res.json({ 
       message: "Si el usuario existe, recibirás un código en tu email registrado",
       sent: true,
-      expiresIn: expirationMinutes * 60 // segundos
+      expiresIn: expirationMinutes * 60, // segundos
+      recoveryToken // Token para retomar la sesión si se cierra la página
     });
 
   } catch (error) {
@@ -209,14 +217,97 @@ exports.solicitarRecuperacion = async (req, res, next) => {
 };
 
 /**
+ * Verificar si un recovery token es válido
+ * Permite retomar una sesión de recuperación si el usuario cerró la página
+ */
+exports.verificarRecoveryToken = async (req, res, next) => {
+  try {
+    const { recoveryToken } = req.body;
+
+    if (!recoveryToken) {
+      return res.status(400).json({ 
+        valid: false,
+        message: "Token no proporcionado" 
+      });
+    }
+
+    const sessionData = await verificationService.verifyRecoveryToken(recoveryToken);
+
+    if (!sessionData) {
+      return res.json({ 
+        valid: false,
+        message: "Token inválido o expirado" 
+      });
+    }
+
+    // Ofuscar el email para mostrar al usuario
+    const emailParts = sessionData.email.split('@');
+    const obfuscatedEmail = emailParts[0].substring(0, 2) + 
+      '*'.repeat(Math.max(emailParts[0].length - 2, 3)) + 
+      '@' + emailParts[1];
+
+    res.json({
+      valid: true,
+      identificador: sessionData.username,
+      email: obfuscatedEmail,
+      timeRemaining: sessionData.timeRemaining
+    });
+
+  } catch (error) {
+    console.error('[ERROR] Error al verificar recovery token:', error);
+    next(error);
+  }
+};
+
+/**
+ * Cancelar una solicitud de recuperación activa
+ * Elimina la solicitud de Redis usando el recoveryToken
+ */
+exports.cancelarRecuperacion = async (req, res, next) => {
+  try {
+    const { recoveryToken } = req.body;
+
+    if (!recoveryToken) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Token no proporcionado" 
+      });
+    }
+
+    // Verificar que el token existe y obtener el userId
+    const sessionData = await verificationService.verifyRecoveryToken(recoveryToken);
+
+    if (!sessionData) {
+      // Si no existe, igual considerarlo exitoso (ya está cancelado/expirado)
+      return res.json({ 
+        success: true,
+        message: "Solicitud cancelada" 
+      });
+    }
+
+    // Eliminar la solicitud de recuperación
+    await verificationService.deletePasswordResetRequest(sessionData.userId);
+
+    res.json({
+      success: true,
+      message: "Solicitud de recuperación cancelada correctamente"
+    });
+
+  } catch (error) {
+    console.error('[ERROR] Error al cancelar recuperación:', error);
+    next(error);
+  }
+};
+
+/**
  * Verificar código y restablecer contraseña
  */
 exports.restablecerContrasena = async (req, res, next) => {
   try {
-    const { identifier, codigo, nuevaPassword } = req.body;
+    const { identificador, codigo, nuevaPassword } = req.body;
 
     // Validaciones
-    if (!identifier || identifier.trim() === '') {
+    if (!identificador || identificador.trim() === '') {
       return res.status(400).json({ 
         message: "Debe proporcionar su nombre de usuario o email" 
       });
@@ -236,14 +327,14 @@ exports.restablecerContrasena = async (req, res, next) => {
 
     // Buscar usuario por username o email
     const usuario = await Usuario.findOne({
-      where: { username: identifier.trim() },
+      where: { username: identificador.trim() },
       include: [{ model: Persona, as: "persona", required: true }],
     });
 
     let usuarioByEmail = null;
     if (!usuario) {
       const persona = await Persona.findOne({
-        where: { email: identifier.trim() },
+        where: { email: identificador.trim() },
       });
       
       if (persona) {

@@ -6,7 +6,8 @@ const {
   Carrera,
   ConfiguracionSistema,
 } = require("../../models");
-  const { enqueueEmail } = require("../../queues/email.queue")
+const { enqueueEmail } = require("../../queues/email.queue");
+const { formatearFecha } = require("../../utils/dateUtils");
 
 exports.createPreinscripcion = async (req, res, next) => {
   const t = await sequelize.transaction();
@@ -74,7 +75,7 @@ exports.createPreinscripcion = async (req, res, next) => {
       "0"
     )}`;
 
-    const submissionDate = fechaHora.toLocaleDateString("es-AR");
+    const submissionDate = formatearFecha(fechaHora);
     const submissionTime = fechaHora.toLocaleTimeString("es-AR", {
       hour: "2-digit",
       minute: "2-digit",

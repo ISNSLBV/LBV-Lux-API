@@ -16,6 +16,10 @@ const {
   CalificacionCuatrimestre,
 } = require("../../../../models");
 const sequelize = require("../../../../config/db");
+const {
+  puedeRecibirCalificacionCuatrimestral,
+  TIPOS_ALUMNO,
+} = require("../../../../utils/examenFinalUtils");
 
 exports.registrarMateriaPlanCicloLectivo = async (req, res, next) => {
   const {
@@ -510,6 +514,24 @@ exports.actualizarCalificacionCuatrimestre = async (req, res, next) => {
       return res
         .status(400)
         .json({ error: "La calificación debe estar entre 0 y 10" });
+    }
+
+    // Verificar el tipo de alumno de la inscripción
+    const inscripcionMateria = await InscripcionMateria.findByPk(inscripcionId, {
+      attributes: ["id_tipo_alumno"],
+    });
+
+    if (!inscripcionMateria) {
+      return res.status(404).json({ error: "Inscripción no encontrada" });
+    }
+
+    // Validar si el tipo de alumno puede recibir calificaciones cuatrimestrales
+    const validacionTipoAlumno = puedeRecibirCalificacionCuatrimestral(
+      inscripcionMateria.id_tipo_alumno
+    );
+
+    if (!validacionTipoAlumno.puede) {
+      return res.status(403).json({ error: validacionTipoAlumno.razon });
     }
 
     // Buscar o crear la calificación

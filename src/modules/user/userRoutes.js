@@ -12,7 +12,12 @@ const {
   solicitarCambioDato,
   verificarCambioDato,
   cancelarCambioDato,
-  obtenerVerificacionesPendientes
+  obtenerVerificacionesPendientes,
+  modificarPlanEstudio,
+  darDeBajaAlumnoCarrera,
+  reactivarAlumnoCarrera,
+  obtenerPlanesCarrera,
+  verificarEstadoCarreras
 } = require("./userController");
 const { verifyToken, requireRole } = require("../../middlewares/auth");
 
@@ -34,5 +39,12 @@ router.post("/:id/cancelar-cambio-dato", verifyToken, cancelarCambioDato);
 router.get("/:id/verificaciones-pendientes", verifyToken, obtenerVerificacionesPendientes);
 
 router.get("/obtener-id-persona", verifyToken, obtenerIdPersona);
+router.get("/verificar-estado-carreras", verifyToken, verificarEstadoCarreras);
+
+// Rutas para gestión de alumnos por carrera
+router.get("/carrera/:idCarrera/planes", verifyToken, requireRole("Administrador"), obtenerPlanesCarrera);
+router.put("/:idUsuario/carrera/:idCarrera/modificar-plan", verifyToken, requireRole("Administrador"), modificarPlanEstudio);
+router.put("/:idUsuario/carrera/:idCarrera/dar-baja", verifyToken, requireRole("Administrador"), darDeBajaAlumnoCarrera);
+router.put("/:idUsuario/carrera/:idCarrera/reactivar", verifyToken, requireRole("Administrador"), reactivarAlumnoCarrera);
 
 module.exports = router;

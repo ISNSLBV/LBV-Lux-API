@@ -15,6 +15,13 @@ class VerificationService {
   }
 
   /**
+   * Genera un token único para identificar una sesión de recuperación
+   */
+  generateRecoveryToken() {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  /**
    * Guarda una solicitud de cambio pendiente en Redis
    * @param {number} userId - ID del usuario
    * @param {string} field - Campo a cambiar ('email' o 'telefono')
@@ -131,26 +138,40 @@ class VerificationService {
    * @param {string} username - Username del usuario
    * @param {string} nombreCompleto - Nombre completo del usuario
    * @param {number} expirationMinutes - Minutos hasta que expire
-   * @returns {Promise<string>} - Código generado
+   * @returns {Promise<{code: string, recoveryToken: string}>} - Código y token generados
    */
   async createPasswordResetRequest(userId, email, username, nombreCompleto, expirationMinutes = 15) {
     const code = this.generateCode();
+    const recoveryToken = this.generateRecoveryToken();
     const key = `verification:${userId}:password_reset`;
+    const tokenKey = `recovery_token:${recoveryToken}`;
     
     const data = {
       code,
       email,
       username,
       nombreCompleto,
+      recoveryToken,
       createdAt: new Date().toISOString(),
     };
 
+    const ttlSeconds = expirationMinutes * 60;
+
+    // Guardar datos de verificación
     await redisClient.setex(
       key,
-      expirationMinutes * 60,
+      ttlSeconds,
       JSON.stringify(data)
     );
-    return code;
+
+    // Guardar mapeo inverso: token -> userId (para poder buscar por token)
+    await redisClient.setex(
+      tokenKey,
+      ttlSeconds,
+      JSON.stringify({ userId, username })
+    );
+
+    return { code, recoveryToken };
   }
 
   /**
@@ -182,7 +203,60 @@ class VerificationService {
    */
   async deletePasswordResetRequest(userId) {
     const key = `verification:${userId}:password_reset`;
+    
+    // Obtener el token antes de eliminar para también eliminar el mapeo inverso
+    const data = await redisClient.get(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed.recoveryToken) {
+        await redisClient.del(`recovery_token:${parsed.recoveryToken}`);
+      }
+    }
+    
     await redisClient.del(key);
+  }
+
+  /**
+   * Verifica si un recovery token es válido y retorna la información de la sesión
+   * @param {string} recoveryToken - Token de recuperación
+   * @returns {Promise<object|null>} - Datos de la sesión o null si no existe
+   */
+  async verifyRecoveryToken(recoveryToken) {
+    if (!recoveryToken) return null;
+    
+    const tokenKey = `recovery_token:${recoveryToken}`;
+    const tokenData = await redisClient.get(tokenKey);
+    
+    if (!tokenData) return null;
+    
+    const { userId, username } = JSON.parse(tokenData);
+    
+    // Obtener datos completos de la verificación
+    const verificationKey = `verification:${userId}:password_reset`;
+    const verificationData = await redisClient.get(verificationKey);
+    
+    if (!verificationData) {
+      // El token existe pero la verificación no, limpiar token huérfano
+      await redisClient.del(tokenKey);
+      return null;
+    }
+    
+    const parsed = JSON.parse(verificationData);
+    
+    // Verificar que el token coincida
+    if (parsed.recoveryToken !== recoveryToken) {
+      return null;
+    }
+    
+    const timeRemaining = await redisClient.ttl(verificationKey);
+    
+    return {
+      userId,
+      username: parsed.username,
+      email: parsed.email,
+      timeRemaining: timeRemaining > 0 ? timeRemaining : 0,
+      createdAt: parsed.createdAt
+    };
   }
 }
 
