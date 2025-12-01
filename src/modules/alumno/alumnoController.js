@@ -807,7 +807,7 @@ exports.verificarEstadoInscripcionFinales = async (req, res) => {
 
           // Verificar si el examen es del mismo ciclo lectivo que la inscripción
           const cicleLectivoInscripcion = inscripcionMateria.ciclo?.ciclo_lectivo;
-          const cicloLectivoExamen = examen.materiaPlan?.ciclo_lectivo || new Date(examen.fecha).getFullYear();
+          const cicloLectivoExamen = examen.materiaPlan?.ciclo_lectivo || new Date(examen.fecha).getUTCFullYear();
           
           // Para alumnos libres, verificar que puedan rendir (1 solo intento)
           const verificacionLibre = await verificarPuedeRendirFinalComoLibre(

@@ -8,10 +8,12 @@ const { Op, fn, col, literal } = require("sequelize");
 const calcularEdad = (fechaNacimiento) => {
   const hoy = new Date();
   const cumpleanos = new Date(fechaNacimiento);
-  let edad = hoy.getFullYear() - cumpleanos.getFullYear();
-  const mes = hoy.getMonth() - cumpleanos.getMonth();
+  
+  // Usar métodos UTC para fechas que vienen de la BD como "YYYY-MM-DD"
+  let edad = hoy.getFullYear() - cumpleanos.getUTCFullYear();
+  const mes = hoy.getMonth() - cumpleanos.getUTCMonth();
 
-  if (mes < 0 || (mes === 0 && hoy.getDate() < cumpleanos.getDate())) {
+  if (mes < 0 || (mes === 0 && hoy.getDate() < cumpleanos.getUTCDate())) {
     edad--;
   }
   return edad;

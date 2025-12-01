@@ -1,7 +1,9 @@
 const express = require("express");
 const dayjs = require("dayjs");
+const utc = require("dayjs/plugin/utc");
 require("dayjs/locale/es");
-const { PDFDocument } = require("pdf-lib");
+dayjs.extend(utc);
+dayjs.locale("es");
 const {
   generarConstanciaAlumnoRegular,
   renderConstanciaHTML,
@@ -383,7 +385,7 @@ async function procesarCertificadoMateriasAprobadas(
           anio: inscripcion.ciclo?.materiaPlan?.anio_carrera ? `${inscripcion.ciclo.materiaPlan.anio_carrera}º Año` : "—",
           nombre: inscripcion.ciclo?.materiaPlan?.materia?.nombre || "Materia no especificada",
           fechaAprobacion: inscripcion.fecha_finalizacion
-            ? dayjs(inscripcion.fecha_finalizacion).format("DD/MM/YYYY")
+            ? dayjs.utc(inscripcion.fecha_finalizacion).format("DD/MM/YYYY")
             : "—",
           notaNumero: notaNumero || "—",
           notaLetras: numerosALetras[notaNumero] || "—",
@@ -479,7 +481,7 @@ async function procesarCertificadoMateriasAprobadas(
             inscripcionesMap.set(idMateriaPlan, {
               estado: insc.estado || "NO CURSADA",
               fechaFinalizacion: insc.fecha_finalizacion
-                ? dayjs(insc.fecha_finalizacion).format("DD/MM/YYYY")
+                ? dayjs.utc(insc.fecha_finalizacion).format("DD/MM/YYYY")
                 : "—",
               nota: insc.nota_final ? Math.round(parseFloat(insc.nota_final)) : "—",
               cicloLectivo: insc.ciclo?.ciclo_lectivo || "—",

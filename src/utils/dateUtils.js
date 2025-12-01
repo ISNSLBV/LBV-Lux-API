@@ -4,6 +4,8 @@
 
 /**
  * Formatea una fecha en formato dd/mm/aaaa
+ * IMPORTANTE: Usa métodos UTC para evitar problemas de zona horaria
+ * cuando la fecha viene de la base de datos (ej: "2000-01-01" no debe cambiar a 31/12/1999)
  * @param {Date|string} fecha - Fecha a formatear
  * @returns {string} Fecha en formato dd/mm/aaaa
  */
@@ -12,9 +14,12 @@ const formatearFecha = (fecha) => {
   
   try {
     const fechaObj = fecha instanceof Date ? fecha : new Date(fecha);
-    const day = String(fechaObj.getDate()).padStart(2, '0');
-    const month = String(fechaObj.getMonth() + 1).padStart(2, '0');
-    const year = fechaObj.getFullYear();
+    
+    // Usar métodos UTC para evitar conversión de zona horaria
+    // Esto es crítico para fechas de nacimiento que vienen de la BD como "YYYY-MM-DD"
+    const day = String(fechaObj.getUTCDate()).padStart(2, '0');
+    const month = String(fechaObj.getUTCMonth() + 1).padStart(2, '0');
+    const year = fechaObj.getUTCFullYear();
     
     return `${day}/${month}/${year}`;
   } catch (error) {
@@ -49,13 +54,15 @@ const parsearFechaLocal = (fechaString) => {
 
 /**
  * Compara solo las fechas (sin tiempo) de dos fechas
+ * IMPORTANTE: Usa componentes UTC para evitar problemas de zona horaria
  * @param {Date} fecha1 
  * @param {Date} fecha2 
  * @returns {number} -1 si fecha1 < fecha2, 0 si iguales, 1 si fecha1 > fecha2
  */
 const compararSoloFechas = (fecha1, fecha2) => {
-  const f1 = new Date(fecha1.getFullYear(), fecha1.getMonth(), fecha1.getDate());
-  const f2 = new Date(fecha2.getFullYear(), fecha2.getMonth(), fecha2.getDate());
+  // Usar UTC para consistencia con formatearFecha
+  const f1 = new Date(fecha1.getUTCFullYear(), fecha1.getUTCMonth(), fecha1.getUTCDate());
+  const f2 = new Date(fecha2.getUTCFullYear(), fecha2.getUTCMonth(), fecha2.getUTCDate());
   
   if (f1 < f2) return -1;
   if (f1 > f2) return 1;
